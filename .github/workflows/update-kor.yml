@@ -1,0 +1,141 @@
+# This file is part of ptsd project which is released under GNU GPL v3.0.
+# Copyright (c) 2025- Limbus Traditional Mandarin
+
+name: Synchronized Korean Storylines
+
+on:
+  push:
+    branches:
+      - storyline
+    paths:
+      - "kr/**"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.final_check.outputs.result }}
+    steps:
+      - name: Checkout storyline branch
+        uses: actions/checkout@v4
+        with:
+          ref: storyline
+          path: storyline
+          fetch-depth: 2 # Required for commit comparison
+
+      - name: Configure Git environment
+        run: |
+          cd storyline
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git config --local core.autocrlf false
+
+      - name: Generate content diff
+        id: generate_diff
+        run: |
+          cd storyline
+
+          # Handle different trigger types
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.event.after }}"
+          else
+            # workflow_dispatch
+            BEFORE=$(git rev-parse HEAD^)
+            AFTER=$(git rev-parse HEAD)
+          fi
+
+          # Initialize empty diff file
+          echo "" > file-diff.txt
+
+          # Process commit comparison
+          if ! git rev-parse --verify "$BEFORE" >/dev/null 2>&1; then
+            # Initial commit scenario
+            git ls-tree -r --name-only "$AFTER" -- kr/ | awk '{print "A\t" $0}' | sed 's/kr\///g' > file-diff.txt
+          else
+            # Regular diff scenario
+            git diff --diff-filter=ACDMRTUXB --name-status "$BEFORE" "$AFTER" -- kr/ | \
+            awk -F'\t' '{
+              gsub("kr/", "", $2); 
+              if ($1 ~ /^R/) {
+                # Handle rename cases
+                split($0, parts, "\t");
+                old_file = gensub(/kr\//, "", "g", parts[2]);
+                new_file = gensub(/kr\//, "", "g", parts[3]);
+                print "D\t" old_file;
+                print "A\t" new_file;
+              } else {
+                print $1 "\t" $2
+              }
+            }' > file-diff.txt
+          fi
+
+          # Normalize file format
+          sed -i '/^$/d' file-diff.txt  # Remove empty lines
+
+          # Validate changes
+          if [ -s file-diff.txt ]; then
+            echo "Detected kr directory changes"
+          else
+            echo "No changes detected"
+            rm -f file-diff.txt
+          fi
+
+      - name: Commit changes
+        id: final_check
+        run: |
+          cd storyline
+
+          if [[ -f file-diff.txt && -s file-diff.txt ]]; then
+            echo "result=true" >> $GITHUB_OUTPUT
+
+            # Stage and commit changes
+            git add file-diff.txt
+            git commit -m "Auto-update kr diff file $(date -u '+%Y-%m-%dT%H:%M:%SZ')" || echo "No changes to commit"
+
+            # Prevent infinite loop
+            if ! git diff --exit-code origin/storyline; then
+              git pull --rebase
+              git push origin storyline
+            fi
+          else
+            echo "result=false" >> $GITHUB_OUTPUT
+          fi
+
+  process_translations:
+    needs: sync
+    if: ${{ needs.sync.outputs.has_changes == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      PARATRANZ_TOKENS: ${{ secrets.PARATRANZ_TOKENS }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-repo
+
+      - name: Checkout storyline
+        uses: actions/checkout@v4
+        with:
+          ref: storyline
+          path: storyline
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: main-repo
+        run: uv sync
+
+      - name: Run translator
+        working-directory: main-repo
+        run: uv run ptsd upload --storyline-folder ../storyline
+        env:
+          PARATRANZ_TOKENS: ${{ env.PARATRANZ_TOKENS }}
