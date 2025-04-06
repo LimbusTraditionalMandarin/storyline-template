@@ -7,8 +7,7 @@ on:
   push:
     branches:
       - storyline
-    paths:
-      - "kr/**"
+
   workflow_dispatch:
 
 jobs:
@@ -23,13 +22,6 @@ jobs:
           ref: storyline
           path: storyline
           fetch-depth: 2 # Required for commit comparison
-
-      - name: Configure Git environment
-        run: |
-          cd storyline
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git config --local core.autocrlf false
 
       - name: Generate content diff
         id: generate_diff
@@ -57,7 +49,7 @@ jobs:
             # Regular diff scenario
             git diff --diff-filter=ACDMRTUXB --name-status "$BEFORE" "$AFTER" -- kr/ | \
             awk -F'\t' '{
-              gsub("kr/", "", $2); 
+              gsub("kr/", "", $2);
               if ($1 ~ /^R/) {
                 # Handle rename cases
                 split($0, parts, "\t");
@@ -82,26 +74,23 @@ jobs:
             rm -f file-diff.txt
           fi
 
-      - name: Commit changes
+      - name: Check changes
         id: final_check
         run: |
           cd storyline
 
           if [[ -f file-diff.txt && -s file-diff.txt ]]; then
             echo "result=true" >> $GITHUB_OUTPUT
-
-            # Stage and commit changes
-            git add file-diff.txt
-            git commit -m "Auto-update kr diff file $(date -u '+%Y-%m-%dT%H:%M:%SZ')" || echo "No changes to commit"
-
-            # Prevent infinite loop
-            if ! git diff --exit-code origin/storyline; then
-              git pull --rebase
-              git push origin storyline
-            fi
           else
             echo "result=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Upload diff file if changed
+        if: steps.final_check.outputs.result == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: file-diff
+          path: storyline/file-diff.txt
 
   process_translations:
     needs: sync
@@ -120,6 +109,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: storyline
+          path: storyline
+
+      - name: Download file-diff artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: file-diff
           path: storyline
 
       - name: Setup uv
